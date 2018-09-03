@@ -18,10 +18,15 @@ import (
 var Version = "0.0.0-src"
 
 var config = struct {
-	File  string `type:"arg" help:"path to xml [file]"`
-	Write bool   `type:"opt" help:"write over xml file with formatted"`
+	File     string   `type:"arg" help:"path to xml [file]"`
+	Write    bool     `type:"opt" help:"write over xml file with formatted"`
+	Settings settings `type:"embedded"`
 }{
 	File: "-",
+}
+
+type settings struct {
+	MaxWidth int `type:"opt" help:"max width of the file in characters (default unlimited)"`
 }
 
 func main() {
@@ -63,7 +68,7 @@ func run() error {
 		w = os.Stdout
 	}
 	//format
-	if err := xmlfmt(r, w); err != nil {
+	if err := xmlfmt(r, w, config.Settings); err != nil {
 		return err
 	}
 	//write results to file?
@@ -77,11 +82,20 @@ func run() error {
 	return nil
 }
 
-func xmlfmt(r io.Reader, w io.Writer) error {
+func xmlfmt(r io.Reader, w io.Writer, s settings) error {
 	//internal state
 	indent := 0
 	inner := false
 	var last xml.Token
+	//local best-effort escape function
+	esbuff := bytes.Buffer{}
+	escape := func(s string) string {
+		if err := xml.EscapeText(&esbuff, []byte(s)); err == nil {
+			s = esbuff.String()
+		}
+		esbuff.Reset()
+		return s
+	}
 	//decode input xml
 	d := xml.NewDecoder(r)
 	for {
@@ -93,15 +107,25 @@ func xmlfmt(r io.Reader, w io.Writer) error {
 		}
 		switch v := t.(type) {
 		case xml.StartElement:
-			//two starts!
+			//two starts? new line!
 			if _, ok := last.(xml.StartElement); ok {
 				fmt.Fprintf(w, "\n")
 			}
 			//render
-			fmt.Fprintf(w, "%s", spaces(indent))
-			fmt.Fprintf(w, "<%s", v.Name.Local)
+			currWidth := 0
+			var n int
+			n, _ = fmt.Fprintf(w, "%s<%s", spaces(indent), v.Name.Local)
+			currWidth += n
 			for _, attr := range v.Attr {
-				fmt.Fprintf(w, ` %s="%s"`, attr.Name.Local, attr.Value)
+				//insert a newline if this line has surpassed max width
+				if s.MaxWidth > 0 && currWidth > s.MaxWidth {
+					fmt.Fprintf(w, "\n")
+					n, _ = fmt.Fprint(w, spaces(indent))
+					currWidth = n //reset current width
+				}
+				//write attribute key-val
+				n, _ = fmt.Fprintf(w, ` %s="%s"`, attr.Name.Local, escape(attr.Value))
+				currWidth += n
 			}
 			fmt.Fprintf(w, ">")
 			//add one indent level
